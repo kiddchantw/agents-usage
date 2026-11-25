@@ -384,7 +384,7 @@ struct UsagePanel: View {
 // MARK: - App
 
 @main
-struct ClaudeUsageApp: App {
+struct AgentsUsageApp: App {
     @StateObject private var model = UsageModel()
 
     var body: some Scene {
