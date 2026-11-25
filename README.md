@@ -1,50 +1,54 @@
-# Agents Usage 選單列小工具
+# Agents Usage Menu Bar App
 
-一個 macOS 選單列小 App,同時顯示 **Claude** 與 **Codex** 的**工作階段(5 小時)**與**每週**用量,不用再分別打開各家的用量頁面。
+**English** | [繁體中文](README.zh-TW.md)
 
-> **非官方工具,不隸屬於 Anthropic 或 OpenAI。** 它依賴未公開的介面,之後隨時可能失效,風險自負。詳見 [隱私與風險](docs/privacy-and-risks.md)。
+A small macOS menu bar app that shows your **Claude** and **Codex** usage — the **session (5-hour)** and **weekly** limits — in one place, so you no longer have to open each service's usage page.
 
-![Agents Usage 面板截圖](docs/screenshot.png)
+> **Unofficial tool, not affiliated with Anthropic or OpenAI.** It relies on undocumented interfaces and may stop working at any time. Use at your own risk. See [Privacy and risks](docs/privacy-and-risks.md) (in Chinese).
 
-## 怎麼看這個畫面
+![Agents Usage panel screenshot](docs/screenshot.png)
 
-**選單列**(右上角)有兩行、四個數字:
+## Reading the screen
+
+The **menu bar** (top right) shows two lines and four numbers:
 
 ```
-A  21/  5 %      ← Claude:5 小時 / 每週
-O   8/ 14 %      ← Codex:5 小時 / 每週
+A  21/  5 %      ← Claude: 5-hour / weekly
+O   8/ 14 %      ← Codex:  5-hour / weekly
 ```
 
-**點開面板**,Claude 與 Codex 各一區,每個限制一列:
+**Click it** to open the panel. Claude and Codex each get a section, with one row per limit:
 
-| 欄位 | 意思 |
+| Column | Meaning |
 | --- | --- |
-| 名稱 | 例如 `Current session`、`Weekly · All models`、`5-hour limit` |
-| `Used` | 這個時段**已使用**的百分比(不是剩餘額度),50% 以上橘色、80% 以上紅色 |
-| `Resets` | 重設時間,例如 `Today 16:10`、`Tue 16:00`;滑鼠停上去會顯示剩餘時間 |
+| Name | For example `Current session`, `Weekly · All models`, `5-hour limit` |
+| `Used` | The percentage **already used** in this window (not what is left). Orange from 50%, red from 80% |
+| `Resets` | When the window resets, such as `Today 16:10` or `Tue 16:00`. Hover to see the time remaining |
 
-進度條上的**細標線**是這個時段已經過去的時間。進度條填色(用量)超過標線,代表消耗得比時間快。
+The **thin marker** on each progress bar shows how much of the window has already elapsed. If the filled part of the bar is past the marker, you are using your quota faster than time is passing.
 
-左下角 `↻` 手動重新整理,旁邊是最後更新時間;右下角 `Quit` 結束。App 沒有 Dock 圖示,只存在於選單列。
+Bottom left, `↻` refreshes manually and the text next to it is the last update time. `Quit` is at the bottom right. The app has no Dock icon and lives only in the menu bar.
 
-## 需求
+## Requirements
 
-- macOS 13 (Ventura) 或更新版本,以及 Xcode 命令列工具(`xcode-select --install`)
-- 已安裝並登入 **Claude Code** 與 **Codex CLI**(ChatGPT 帳號)。兩者各自獨立,只裝一個也能用,另一區會顯示錯誤
-- 有時段限額的付費方案
+- macOS 13 (Ventura) or later, and the Xcode command line tools (`xcode-select --install`)
+- **Claude Code** and **Codex CLI** installed and signed in (Codex with a ChatGPT account). They are independent: with only one installed, the other section simply shows an error
+- A paid plan that has per-window limits
 
-## 快速開始
+## Quick start
 
 ```bash
 bash build.sh
 open AgentsUsage.app
 ```
 
-第一次執行時,macOS 會詢問是否允許讀取 Claude Code 的憑證,請選「**始終允許**」。
+On first launch, macOS asks whether to allow access to Claude Code's credentials. Choose **Always Allow**.
 
-## 更多說明
+## More
 
-- [安裝細節](docs/install.md):開機自動啟動、解除安裝
-- [運作原理](docs/how-it-works.md):Claude 與 Codex 如何取得用量、更新頻率、技術備註
-- [疑難排解](docs/troubleshooting.md)
-- [隱私與風險](docs/privacy-and-risks.md)
+The pages below are currently in Chinese only.
+
+- [Installation details](docs/install.md): launch at login, uninstall
+- [How it works](docs/how-it-works.md): how Claude and Codex usage is read, refresh interval, technical notes
+- [Troubleshooting](docs/troubleshooting.md)
+- [Privacy and risks](docs/privacy-and-risks.md)
