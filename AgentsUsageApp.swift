@@ -1,6 +1,11 @@
 import SwiftUI
 import AppKit
 
+private enum UsagePalette {
+    static let claude = NSColor(srgbRed: 218.0 / 255, green: 119.0 / 255, blue: 86.0 / 255, alpha: 1)
+    static let codex = Color(.sRGB, red: 16.0 / 255, green: 163.0 / 255, blue: 127.0 / 255)
+}
+
 // MARK: - Data types
 
 struct UsageRow: Identifiable {
@@ -20,10 +25,10 @@ private struct WindowSpec {
 }
 
 private let windowSpecs: [WindowSpec] = [
-    WindowSpec(key: "five_hour",        name: "目前工作階段", sub: nil,        span: 5 * 3600),
-    WindowSpec(key: "seven_day",        name: "每週限制",     sub: "所有模型",  span: 7 * 86400),
-    WindowSpec(key: "seven_day_opus",   name: "每週限制",     sub: "Opus",     span: 7 * 86400),
-    WindowSpec(key: "seven_day_sonnet", name: "每週限制",     sub: "Sonnet",   span: 7 * 86400),
+    WindowSpec(key: "five_hour",        name: "Current session", sub: nil,        span: 5 * 3600),
+    WindowSpec(key: "seven_day",        name: "Weekly",          sub: "All models", span: 7 * 86400),
+    WindowSpec(key: "seven_day_opus",   name: "Weekly",          sub: "Opus",       span: 7 * 86400),
+    WindowSpec(key: "seven_day_sonnet", name: "Weekly",          sub: "Sonnet",     span: 7 * 86400),
 ]
 
 enum UsageError: Error {
@@ -38,19 +43,19 @@ enum UsageError: Error {
     var message: String {
         switch self {
         case .noCredentials:
-            return "找不到 Claude Code 的登入憑證。請先在終端機執行 claude 並登入,再按重新整理。macOS 若跳出鑰匙圈視窗,請選「允許」。"
+            return "Claude Code credentials were not found. Run claude in Terminal, sign in, then refresh. If macOS prompts for Keychain access, choose Allow."
         case .expired:
-            return "Claude Code 的登入憑證已過期。開啟一次 Claude Code 讓它更新,再按重新整理。"
+            return "Claude Code credentials expired. Open Claude Code, then refresh."
         case .unauthorized(let code):
-            return "Anthropic 拒絕了這份憑證(HTTP \(code))。請重新登入 Claude Code 後再試。"
+            return "Anthropic rejected the credentials (HTTP \(code)). Sign in to Claude Code again."
         case .rateLimited:
-            return "查詢太頻繁(HTTP 429),稍後會自動重試。"
+            return "Rate limited (HTTP 429). The app will retry automatically."
         case .http(let code):
-            return "Anthropic 回應 HTTP \(code)。這個端點未公開,可能已經變更。按 {} 可以看原始回應。"
+            return "Anthropic returned HTTP \(code). Select {} to view the response."
         case .network(let detail):
-            return "連不上 Anthropic:\(detail)"
+            return "Could not reach Anthropic (\(detail))."
         case .badFormat:
-            return "回應不是預期的格式。按 {} 可以看原始回應。"
+            return "Unexpected response format. Select {} to view the response."
         }
     }
 }
@@ -169,13 +174,123 @@ enum UsageService {
 
 // MARK: - Model
 
+private enum CodexUsageService {
+    private struct Window: Decodable {
+        let usedPercent: Double
+        let windowDurationMins: Int
+        let resetsAt: Double?
+    }
+
+    private struct Limits: Decodable {
+        let primary: Window?
+        let secondary: Window?
+    }
+
+    private struct Result: Decodable {
+        let rateLimits: Limits
+    }
+
+    private struct Reply: Decodable {
+        let result: Result
+    }
+
+    enum Failure: LocalizedError {
+        case missingCLI, unavailable
+
+        var errorDescription: String? {
+            switch self {
+            case .missingCLI: return "Codex CLI was not found."
+            case .unavailable: return "Could not fetch Codex limits. Make sure Codex CLI is signed in to ChatGPT."
+            }
+        }
+    }
+
+    static func load() async throws -> [UsageRow] {
+        try await Task.detached(priority: .utility) {
+            try fetch()
+        }.value
+    }
+
+    private static func fetch() throws -> [UsageRow] {
+        let directories = (ProcessInfo.processInfo.environment["PATH"] ?? "")
+            .split(separator: ":").map(String.init)
+            + ["/opt/homebrew/bin", "/usr/local/bin", NSHomeDirectory() + "/.local/bin"]
+        guard let executable = directories.filter({ $0.hasPrefix("/") })
+            .map({ $0 + "/codex" })
+            .first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
+            throw Failure.missingCLI
+        }
+
+        let process = Process()
+        let input = Pipe()
+        let output = Pipe()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = ["app-server", "--listen", "stdio://"]
+        process.standardInput = input
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        let timeout = DispatchWorkItem {
+            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+        }
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 12, execute: timeout)
+        defer {
+            try? input.fileHandleForWriting.close()
+            if process.isRunning { process.terminate() }
+            process.waitUntilExit()
+            timeout.cancel()
+        }
+
+        var buffer = Data()
+        func send(_ message: String) throws {
+            try input.fileHandleForWriting.write(contentsOf: Data((message + "\n").utf8))
+        }
+        func receive(id: Int) throws -> Data {
+            while true {
+                if let newline = buffer.firstIndex(of: 10) {
+                    let line = Data(buffer[..<newline])
+                    buffer.removeSubrange(...newline)
+                    let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any]
+                    if object?["id"] as? Int == id {
+                        guard object?["result"] != nil else { throw Failure.unavailable }
+                        return line
+                    }
+                } else {
+                    let chunk = output.fileHandleForReading.availableData
+                    guard !chunk.isEmpty else { throw Failure.unavailable }
+                    buffer.append(chunk)
+                }
+            }
+        }
+
+        try send(#"{"id":1,"method":"initialize","params":{"clientInfo":{"name":"agents-usage","version":"1.0"}}}"#)
+        _ = try receive(id: 1)
+        try send(#"{"method":"initialized"}"#)
+        try send(#"{"id":2,"method":"account/rateLimits/read"}"#)
+        let limits = try JSONDecoder().decode(Reply.self, from: receive(id: 2)).result.rateLimits
+        return [limits.primary, limits.secondary].compactMap { $0 }.map { window in
+            let name: String
+            switch window.windowDurationMins {
+            case 300: name = "5-hour limit"
+            case 10080: name = "Weekly"
+            default: name = "\(window.windowDurationMins)-minute limit"
+            }
+            return UsageRow(id: String(window.windowDurationMins), name: name, sub: nil,
+                            percent: window.usedPercent,
+                            resetsAt: window.resetsAt.map(Date.init(timeIntervalSince1970:)),
+                            span: Double(window.windowDurationMins) * 60)
+        }
+    }
+}
+
 @MainActor
 final class UsageModel: ObservableObject {
     @Published var rows: [UsageRow] = []
     @Published var errorMessage: String?
     @Published var lastUpdated: Date?
     @Published var isLoading = false
-    @Published var raw = ""
+    @Published var codexRows: [UsageRow] = []
+    @Published var codexError: String?
 
     private var lastFetch = Date.distantPast
     private var timer: Timer?
@@ -188,8 +303,32 @@ final class UsageModel: ObservableObject {
     }
 
     var menuTitle: String {
-        if rows.isEmpty { return errorMessage == nil ? "…" : "!" }
-        return rows.prefix(2).map { "\(Int($0.percent.rounded()))%" }.joined(separator: " / ")
+        func summary(_ prefix: String, _ readings: [UsageRow]) -> String {
+            func percent(for span: TimeInterval) -> String {
+                guard let row = readings.first(where: { $0.span == span }) else { return "  –" }
+                return String(format: "%3.0f", row.percent)
+            }
+            return "\(prefix) \(percent(for: 18000))/\(percent(for: 604800)) %"
+        }
+        return summary("A", rows) + "\n" + summary("O", codexRows)
+    }
+
+    var menuImage: NSImage {
+        let title = menuTitle
+        let font = NSFont.monospacedSystemFont(ofSize: 9, weight: .medium)
+        let lineHeight: CGFloat = 10
+        let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.black]
+        let lines = title.components(separatedBy: "\n")
+        let width = lines.map { ($0 as NSString).size(withAttributes: attributes).width }.max() ?? 0
+        let image = NSImage(size: NSSize(width: ceil(width), height: lineHeight * 2), flipped: true) { _ in
+            for (index, line) in lines.enumerated() {
+                (line as NSString).draw(at: NSPoint(x: 0, y: CGFloat(index) * lineHeight - 1),
+                                        withAttributes: attributes)
+            }
+            return true
+        }
+        image.isTemplate = true
+        return image
     }
 
     func refresh(manual: Bool) {
@@ -197,9 +336,20 @@ final class UsageModel: ObservableObject {
         if manual, Date().timeIntervalSince(lastFetch) < 15 { return }
         isLoading = true
         Task {
+            async let codex: Void = loadCodex()
             await load()
+            await codex
             lastFetch = Date()
             isLoading = false
+        }
+    }
+
+    private func loadCodex() async {
+        do {
+            codexRows = try await CodexUsageService.load()
+            codexError = nil
+        } catch {
+            codexError = error.localizedDescription
         }
     }
 
@@ -214,7 +364,6 @@ final class UsageModel: ObservableObject {
         }
         do {
             let (status, data) = try await UsageService.request(token: credentials.token)
-            raw = Self.pretty(data)
             switch status {
             case 200..<300: break
             case 401, 403: throw UsageError.unauthorized(status)
@@ -227,157 +376,152 @@ final class UsageModel: ObservableObject {
         } catch let error as UsageError {
             errorMessage = error.message
         } catch {
-            errorMessage = "讀取用量時出錯:\(error.localizedDescription)"
+            errorMessage = "Could not fetch usage (\(error.localizedDescription))."
         }
     }
 
-    private static func pretty(_ data: Data) -> String {
-        if let object = try? JSONSerialization.jsonObject(with: data),
-           let formatted = try? JSONSerialization.data(withJSONObject: object,
-                                                       options: [.prettyPrinted, .sortedKeys]),
-           let text = String(data: formatted, encoding: .utf8) {
-            return text
-        }
-        return String(data: data.prefix(4000), encoding: .utf8) ?? ""
-    }
 }
 
 // MARK: - Views
 
+private enum UsageColumns {
+    static let percent: CGFloat = 44
+    static let reset: CGFloat = 70
+    static let spacing: CGFloat = 8
+}
+
 struct RowView: View {
     let row: UsageRow
     let now: Date
+    let barColor: Color
 
     private var pct: Double { min(100, max(0, row.percent)) }
-    private var color: Color { pct >= 80 ? .red : (pct >= 50 ? .orange : .teal) }
+    private var percentColor: Color { pct >= 80 ? .red : (pct >= 50 ? .orange : .primary) }
     private var left: TimeInterval? { row.resetsAt.map { $0.timeIntervalSince(now) } }
     private var elapsed: Double? { left.map { min(1, max(0, 1 - $0 / row.span)) } }
+    private var percentText: String { String(format: "%.0f%%", row.percent) }
 
     private var resetText: String {
-        guard let date = row.resetsAt else { return "" }
-        let weekly = row.span > 86400
-        let style = weekly
-            ? Date.FormatStyle().weekday(.abbreviated).hour().minute()
-            : Date.FormatStyle().hour().minute()
-        return "於 " + date.formatted(style.locale(Locale(identifier: "zh_TW"))) + " 重設"
+        guard let date = row.resetsAt else { return "—" }
+        let locale = Locale(identifier: "en_GB")
+        if Calendar.current.isDate(date, inSameDayAs: now) {
+            return "Today " + date.formatted(.dateTime.hour().minute().locale(locale))
+        }
+        return date.formatted(.dateTime.weekday(.abbreviated).hour().minute().locale(locale))
     }
 
     private var leftText: String {
-        guard let left else { return "" }
-        if left <= 0 { return "即將重設" }
+        guard let left else { return "Reset time unavailable" }
+        if left <= 0 { return "Resets soon" }
         let minutes = Int((left / 60).rounded())
-        if minutes < 60 { return "剩 \(minutes) 分" }
+        if minutes < 60 { return "\(minutes)m left" }
         let hours = minutes / 60
-        if hours < 24 { return "剩 \(hours) 小時 \(minutes % 60) 分" }
-        return "剩 \(hours / 24) 天 \(hours % 24) 小時"
+        if hours < 24 { return "\(hours)h \(minutes % 60)m left" }
+        return "\(hours / 24)d \(hours % 24)h left"
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(row.name).font(.system(size: 13, weight: .semibold))
-                if let sub = row.sub {
-                    Text(sub).font(.system(size: 12)).foregroundStyle(.secondary)
-                }
-                Spacer()
-                Text("\(Int(row.percent.rounded()))")
-                    .font(.system(size: 28, weight: .bold)).monospacedDigit()
-                + Text("%")
-                    .font(.system(size: 13, weight: .semibold)).foregroundColor(.secondary)
+        let subtitle = Text(row.sub.map { " · \($0)" } ?? "").foregroundColor(.secondary)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: UsageColumns.spacing) {
+                Text("\(row.name)\(subtitle)")
+                    .font(.system(size: 12))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text(percentText)
+                    .font(.system(size: 13, weight: .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(percentColor)
+                    .frame(width: UsageColumns.percent, alignment: .trailing)
+                Text(resetText)
+                    .font(.system(size: 11))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .frame(width: UsageColumns.reset, alignment: .trailing)
+                    .help(leftText)
             }
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
                     Capsule().fill(Color.primary.opacity(0.12))
-                    Capsule().fill(color).frame(width: max(6, geo.size.width * pct / 100))
+                    Capsule().fill(barColor).frame(width: geo.size.width * pct / 100)
                     if let elapsed {
                         Rectangle()
                             .fill(Color.primary.opacity(0.55))
-                            .frame(width: 2, height: 14)
-                            .offset(x: geo.size.width * elapsed - 1)
+                            .frame(width: 1, height: 7)
+                            .offset(x: min(max(0, geo.size.width - 1), geo.size.width * elapsed))
                     }
                 }
             }
-            .frame(height: 8)
-            HStack {
-                Text(resetText)
-                Spacer()
-                Text(leftText)
-            }
-            .font(.system(size: 12))
-            .foregroundStyle(.secondary)
+            .frame(height: 7)
+            .help(elapsed == nil ? "Usage in this window" : "The marker shows how much of this window has elapsed.")
+            .accessibilityHidden(true)
         }
     }
 }
 
 struct UsagePanel: View {
     @EnvironmentObject var model: UsageModel
-    @State private var showRaw = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 10) {
+            TimelineView(.periodic(from: .now, by: 30)) { context in
+                VStack(alignment: .leading, spacing: 10) {
+                    section("Claude", rows: model.rows, error: model.errorMessage, now: context.date,
+                            barColor: Color(nsColor: UsagePalette.claude),
+                            showColumnHeaders: !model.rows.isEmpty || !model.codexRows.isEmpty)
+                    Divider()
+                    section("Codex", rows: model.codexRows, error: model.codexError, now: context.date,
+                            barColor: UsagePalette.codex)
+                }
+            }
+
+            Divider()
             HStack {
-                Text("Claude 用量").font(.headline)
-                Spacer()
-                Button { showRaw.toggle() } label: { Image(systemName: "curlybraces") }
-                    .help("原始回應")
                 Button { model.refresh(manual: true) } label: { Image(systemName: "arrow.clockwise") }
                     .disabled(model.isLoading)
-                    .help("重新整理")
-            }
-            .buttonStyle(.borderless)
-
-            if let message = model.errorMessage {
-                HStack(alignment: .top, spacing: 8) {
-                    Rectangle().fill(Color.red).frame(width: 3)
-                    Text(message).font(.system(size: 12)).fixedSize(horizontal: false, vertical: true)
-                }
-            }
-
-            if showRaw {
-                ScrollView {
-                    Text(model.raw.isEmpty ? "尚無回應" : model.raw)
-                        .font(.system(size: 11, design: .monospaced))
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .frame(maxHeight: 180)
-            } else {
-                TimelineView(.periodic(from: .now, by: 30)) { context in
-                    VStack(alignment: .leading, spacing: 14) {
-                        ForEach(model.rows) { RowView(row: $0, now: context.date) }
-                    }
-                }
-                if model.rows.isEmpty && model.errorMessage == nil {
-                    Text(model.isLoading ? "讀取中…" : "尚無資料").foregroundStyle(.secondary)
-                }
-            }
-
-            HStack {
+                    .help("Refresh")
                 if model.isLoading {
-                    Text("更新中…")
+                    Text("Refreshing…")
                 } else if let updated = model.lastUpdated {
-                    Text("更新於 " + updated.formatted(date: .omitted, time: .shortened))
+                    Text("Updated " + updated.formatted(.dateTime.hour().minute().locale(Locale(identifier: "en_GB"))))
                 }
                 Spacer()
-                if !model.rows.isEmpty && !showRaw {
-                    Text("標線是時段已過的時間")
+                Button("Quit") { NSApplication.shared.terminate(nil) }
+            }
+            .buttonStyle(.borderless)
+            .font(.system(size: 11))
+            .foregroundStyle(.secondary)
+        }
+        .padding(12)
+        .frame(width: 269)
+    }
+
+    private func section(_ title: String, rows: [UsageRow], error: String?, now: Date,
+                         barColor: Color, showColumnHeaders: Bool = false) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(alignment: .firstTextBaseline, spacing: UsageColumns.spacing) {
+                Text(title).font(.headline)
+                    .foregroundStyle(.primary)
+                    .accessibilityAddTraits(.isHeader)
+                if showColumnHeaders {
+                    Spacer(minLength: 0)
+                    Text("Used").frame(width: UsageColumns.percent, alignment: .trailing)
+                    Text("Resets").frame(width: UsageColumns.reset, alignment: .trailing)
                 }
             }
             .font(.system(size: 11))
             .foregroundStyle(.secondary)
-
-            Divider()
-            HStack {
-                Button("開啟用量設定頁") {
-                    NSWorkspace.shared.open(URL(string: "https://claude.ai/settings/usage")!)
-                }
-                Spacer()
-                Button("結束") { NSApplication.shared.terminate(nil) }
+            if let error {
+                Text(error)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if rows.isEmpty {
+                Text(model.isLoading ? "Loading…" : "No data yet")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
             }
-            .buttonStyle(.borderless)
+            ForEach(rows) { RowView(row: $0, now: now, barColor: barColor) }
         }
-        .padding(16)
-        .frame(width: 300)
     }
 }
 
@@ -391,7 +535,8 @@ struct AgentsUsageApp: App {
         MenuBarExtra {
             UsagePanel().environmentObject(model)
         } label: {
-            Text(model.menuTitle).monospacedDigit()
+            Image(nsImage: model.menuImage)
+                .accessibilityLabel(model.menuTitle)
         }
         .menuBarExtraStyle(.window)
     }
