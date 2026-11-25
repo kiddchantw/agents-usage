@@ -51,11 +51,11 @@ enum UsageError: Error {
         case .rateLimited:
             return "Rate limited (HTTP 429). The app will retry automatically."
         case .http(let code):
-            return "Anthropic returned HTTP \(code). Select {} to view the response."
+            return "Anthropic returned HTTP \(code)."
         case .network(let detail):
             return "Could not reach Anthropic (\(detail))."
         case .badFormat:
-            return "Unexpected response format. Select {} to view the response."
+            return "Unexpected response format. The endpoint may have changed."
         }
     }
 }
