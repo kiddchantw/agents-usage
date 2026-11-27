@@ -396,7 +396,6 @@ struct RowView: View {
     let barColor: Color
 
     private var pct: Double { min(100, max(0, row.percent)) }
-    private var percentColor: Color { pct >= 80 ? .red : (pct >= 50 ? .orange : .primary) }
     private var left: TimeInterval? { row.resetsAt.map { $0.timeIntervalSince(now) } }
     private var elapsed: Double? { left.map { min(1, max(0, 1 - $0 / row.span)) } }
     private var percentText: String { String(format: "%.0f%%", row.percent) }
@@ -430,7 +429,7 @@ struct RowView: View {
                 Text(percentText)
                     .font(.system(size: 13, weight: .semibold))
                     .monospacedDigit()
-                    .foregroundStyle(percentColor)
+                    .foregroundStyle(.primary)
                     .frame(width: UsageColumns.percent, alignment: .trailing)
                 Text(resetText)
                     .font(.system(size: 11))
