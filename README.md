@@ -22,7 +22,7 @@ O   8/ 14 %      ← Codex:  5-hour / weekly
 | Column | Meaning |
 | --- | --- |
 | Name | For example `Current session`, `Weekly · All models`, `5-hour limit` |
-| `Used` | The percentage **already used** in this window (not what is left). Orange from 50%, red from 80% |
+| `Used` | The percentage **already used** in this window (not what is left) |
 | `Resets` | When the window resets, such as `Today 16:10` or `Tue 16:00`. Hover to see the time remaining |
 
 The **thin marker** on each progress bar shows how much of the window has already elapsed. If the filled part of the bar is past the marker, you are using your quota faster than time is passing.
